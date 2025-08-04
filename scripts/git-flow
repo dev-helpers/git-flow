@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# 
+# See show_help above for more info
+#
+set -euo pipefail
+
+show_help() {
+  cat << EOF
+Usage: git-flow <command> [args]
+
+Commands:
+  sync        Sync current branch with its base (feature/bugfix → develop or hotfix → main)
+  feature     Create a new feature branch (from develop)
+  hotfix      Create a new hotfix branch (from main)
+  bugfix      Create a new bugfix branch (from develop)
+  propose     Open PR for current branch in Azure DevOps
+
+Options:
+  --push      Push the branch after creating/syncing
+  --help      Show this help message
+
+Example Usage:
+  git sync
+  git feature login
+  git bugfix issue-123 --push
+  git pr
+EOF
+}
+
+# --- Configuration ---
+BRANCH_TYPES="feature bugfix hotfix"
+
+# --- Shared Functions ---
+error() { printf '❌ Error: %s\n' "$1" >&2; exit 1; }
+
+get_branch_name() {
+  git rev-parse --abbrev-ref HEAD 2>/dev/null || error "Not a git repo or cannot detect current branch"
+}
+
+validate_prefix() {
+  local branch=$1
+  local type="${branch%%/*}"
+
+  for allowed in $BRANCH_TYPES; do
+    [[ "$type" == "$allowed" ]] && return 0
+  done
+
+  error "Branch must start with one of: $(echo "$BRANCH_TYPES" | tr ' ' ', ')"
+}
+
+detect_base() {
+  local branch=$1
+  local type="${branch%%/*}"
+
+  case "$type" in
+    hotfix) echo main ;;
+    *)      echo develop ;;
+  esac
+}
+
+check_ssh_installed() {
+  if ! command -v ssh >/dev/null 2>&1; then
+    error "SSH is not installed. Please install SSH."
+  fi
+}
+
+initialize_ssh() {
+  check_ssh_installed
+  export GIT_SSH_COMMAND="ssh -o ControlMaster=auto -o ControlPersist=45s -o ControlPath=/tmp/ssh_mux_%h_%p_%r_$USER"
+}
+
+fetch_prune() {
+  echo "→ Fetching and pruning origin…"
+  git fetch --prune origin
+}
+
+conditional_push() {
+  local branch=$1 do_push=$2 action=$3
+  if $do_push; then
+    echo "→ Pushing '${branch}'…"
+    git push --force-with-lease origin "$branch" || error "Push failed for branch '${branch}'"
+    echo "✔ ${action} and pushed '${branch}'"
+  else
+    echo "✔ ${action} '${branch}'"
+  fi
+}
+
+# --- Commands ---
+cmd_sync() {
+  local do_push=false
+  if [[ "${1-}" == "--push" ]]; then do_push=true; shift; fi
+
+  [[ $# -eq 0 ]] || error "Usage: git flow sync [--push]"
+
+  local branch base
+  branch=$(get_branch_name)
+  base=$(detect_base "$branch")
+
+  echo "[GIT-FLOW] Syncing '$branch' against '$base'"
+  validate_prefix "$branch"
+  initialize_ssh
+  fetch_prune
+
+  echo "→ Rebasing '$branch' onto origin/$base…"
+  git rebase "origin/$base" --autostash || error "Rebase failed; resolve conflicts and run 'git rebase --continue'"
+
+  conditional_push "$branch" $do_push "Synced"
+}
+
+cmd_create() {
+  local do_push=false type param target_branch
+
+  for arg in "$@"; do
+    case "$arg" in
+      --push) do_push=true ;;
+      */*)    target_branch="$arg" ;;
+      *)      [[ -z "${type:-}" ]] && type="$arg" || param="$arg" ;;
+    esac
+  done
+
+  if [[ -z "${target_branch:-}" ]]; then
+    [[ -n "${type:-}" && -n "${param:-}" ]] || error "Usage: git flow {${BRANCH_TYPES// /|}} [--push] <name|type/name>"
+    target_branch="${type}/${param}"
+  fi
+
+  validate_prefix "$target_branch"
+
+  local base
+  base=$(detect_base "$target_branch")
+
+  echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
+  initialize_ssh
+  fetch_prune
+
+  git checkout "$base" || error "Failed to checkout base branch '$base'"
+  git pull --ff-only origin "$base" || error "Failed to pull latest '$base'"
+  git checkout -b "$target_branch" || error "Failed to create branch '$target_branch'"
+
+  conditional_push "$target_branch" $do_push "Created"
+}
+
+cmd_propose_azure() {
+  local branch base_url remote_url url
+
+  branch=$(get_branch_name)
+  echo "[GIT-FLOW] Generating PR creation URL for '$branch'…"
+
+  base_url=""
+  if command -v az >/dev/null 2>&1 &&
+     base_url=$(az repos show --detect --output tsv --query webUrl 2>/dev/null); then
+    :
+  fi
+
+  if [[ -z "$base_url" ]]; then
+    remote_url=$(git remote get-url origin 2>/dev/null) || error "Could not get remote URL from 'origin'"
+
+    if [[ "$remote_url" =~ ^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)(\.git)?$ ]]; then
+      base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
+    elif [[ "$remote_url" =~ ^https://dev.azure.com/([^/]+)/([^/]+)/_git/([^/]+)(\.git)?$ ]]; then
+      base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
+    else
+      error "Could not detect Azure DevOps repository from '$remote_url'"
+    fi
+  fi
+
+  url="${base_url}/pullrequestcreate?sourceRef=${branch}"
+  xdg-open "$url" >/dev/null 2>&1 \
+    || open "$url" >/dev/null 2>&1 \
+    || echo "✔ Open this URL in your browser: $url"
+}
+
+# --- Dispatcher ---
+cmd=${1-}
+shift || true
+
+case "$cmd" in
+  --help)
+    show_help
+    ;;
+  sync)
+    cmd_sync "$@"
+    ;;
+  propose|pr)
+    cmd_propose_azure
+    ;;
+  *)
+    for type in $BRANCH_TYPES; do
+      if [[ "$cmd" == "$type" ]]; then
+        cmd_create "$type" "$@"
+        exit
+      elif [[ "$cmd" == "$type/"* ]]; then
+        cmd_create "$cmd" "$@"
+        exit
+      fi
+    done
+
+    echo "Usage: git flow {sync,${BRANCH_TYPES// /,},propose} [args]"
+    exit 1
+    ;;
+esac
