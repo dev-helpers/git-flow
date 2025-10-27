@@ -140,7 +140,7 @@ cmd_create() {
 }
 
 cmd_propose_azure() {
-  local branch base_url remote_url url
+  local branch base_url remote_url url target_ref
 
   branch=$(get_branch_name)
   echo "[GIT-FLOW] Generating PR creation URL for '$branch'…"
@@ -162,6 +162,9 @@ cmd_propose_azure() {
       error "Could not detect Azure DevOps repository from '$remote_url'"
     fi
   fi
+
+  target_ref=$(detect_base "$branch")
+  url="${base_url%/}/pullrequestcreate?sourceRef=${branch}&targetRef=${target_ref}"
 
   url="${base_url}/pullrequestcreate?sourceRef=${branch}"
   xdg-open "$url" >/dev/null 2>&1 \
