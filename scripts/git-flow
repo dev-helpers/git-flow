@@ -166,7 +166,6 @@ cmd_propose_azure() {
   target_ref=$(detect_base "$branch")
   url="${base_url%/}/pullrequestcreate?sourceRef=${branch}&targetRef=${target_ref}"
 
-  url="${base_url}/pullrequestcreate?sourceRef=${branch}"
   xdg-open "$url" >/dev/null 2>&1 \
     || open "$url" >/dev/null 2>&1 \
     || echo "✔ Open this URL in your browser: $url"
