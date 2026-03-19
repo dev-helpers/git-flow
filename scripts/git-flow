@@ -69,6 +69,22 @@ initialize_ssh() {
   export GIT_SSH_COMMAND="ssh -o ControlMaster=auto -o ControlPersist=45s -o ControlPath=/tmp/ssh_mux_%h_%p_%r_$USER"
 }
 
+remote_uses_ssh() {
+  local remote_name=${1:-origin}
+  local remote_url
+
+  remote_url=$(git remote get-url "$remote_name" 2>/dev/null || true)
+  [[ "$remote_url" =~ ^git@ ]] || [[ "$remote_url" =~ ^ssh:// ]]
+}
+
+initialize_transport() {
+  if remote_uses_ssh origin; then
+    initialize_ssh
+  else
+    unset GIT_SSH_COMMAND 2>/dev/null || true
+  fi
+}
+
 fetch_prune() {
   echo "→ Fetching and pruning origin…"
   git fetch --prune origin
@@ -98,7 +114,7 @@ cmd_sync() {
 
   echo "[GIT-FLOW] Syncing '$branch' against '$base'"
   validate_prefix "$branch"
-  initialize_ssh
+  initialize_transport
   fetch_prune
 
   echo "→ Rebasing '$branch' onto origin/$base…"
@@ -129,7 +145,7 @@ cmd_create() {
   base=$(detect_base "$target_branch")
 
   echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
-  initialize_ssh
+  initialize_transport
   fetch_prune
 
   git checkout "$base" || error "Failed to checkout base branch '$base'"
