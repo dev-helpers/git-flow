@@ -39,8 +39,10 @@ if [ "$CONFIG_ALIAS" = true ]; then
   git config --global alias.flow     "!${GIT_FLOW}"
   git config --global alias.sync     "!${GIT_FLOW} sync"
   git config --global alias.feature  "!${GIT_FLOW} feature"
+  git config --global alias.feat     "!${GIT_FLOW} feature"
   git config --global alias.hotfix   "!${GIT_FLOW} hotfix"
   git config --global alias.bugfix   "!${GIT_FLOW} bugfix"
+  git config --global alias.fix      "!${GIT_FLOW} bugfix"
   git config --global alias.propose  "!${GIT_FLOW} propose"
   git config --global alias.pr       "!${GIT_FLOW} propose"
 fi
