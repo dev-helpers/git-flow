@@ -35,8 +35,8 @@ error() {
 	printf '❌ Error: %s\n' "$1" >&2
 	exit 1
 }
-warn() { printf '⚠️ Warning: %s\n' "$1" >&2; }
-info() { printf '→ %s\n' "$1" >&2; }
+warn() { printf ' ! Warning: %s\n' "$1" >&2; }
+info() { printf ' → %s\n' "$1" >&2; }
 ok() { printf '✔ %s\n' "$1" >&2; }
 
 current_branch() {
@@ -135,6 +135,40 @@ restore_autostash() {
 	error "Failed to restore auto-stashed changes"
 }
 
+rollback_create() {
+	local original_branch=$1
+	local stash_ref=${2-}
+	local returned_to_original=false
+
+	warn "Branch creation failed. Attempting to restore previous state…"
+
+	if [[ -n ${original_branch} ]]; then
+		if git checkout "${original_branch}" >/dev/null 2>&1; then
+			returned_to_original=true
+			info "Returned to '${original_branch}'"
+		else
+			warn "Could not switch back to '${original_branch}'"
+		fi
+	else
+		warn "Original context was detached HEAD; skipping automatic branch restore"
+	fi
+
+	if [[ -n ${stash_ref} ]]; then
+		if ${returned_to_original}; then
+			info "Restoring stashed local changes to '${original_branch}'…"
+			if git stash apply --index "${stash_ref}" >/dev/null 2>&1; then
+				git stash drop "${stash_ref}" >/dev/null 2>&1 || true
+				info "Restored local changes to '${original_branch}'"
+			else
+				warn "Could not restore stashed changes automatically"
+				warn "Your stash was kept as '${stash_ref}'"
+			fi
+		else
+			warn "Your stash was kept as '${stash_ref}'"
+		fi
+	fi
+}
+
 fetch_prune() {
 	info "Fetching and pruning origin…"
 	git fetch --prune origin
@@ -216,9 +250,20 @@ cmd_create() {
 		fi
 	fi
 
-	git checkout "${base}" || error "Failed to checkout base branch '${base}'"
-	git merge --ff-only "origin/${base}" || error "Failed to fast-forward '${base}' to 'origin/${base}'"
-	git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
+	if ! git checkout "${base}"; then
+		rollback_create "${original_branch}" "${stash_ref}"
+		error "Failed to checkout base branch '${base}'"
+	fi
+
+	if ! git merge --ff-only "origin/${base}"; then
+		rollback_create "${original_branch}" "${stash_ref}"
+		error "Failed to fast-forward '${base}' to 'origin/${base}'"
+	fi
+
+	if ! git checkout -b "${target_branch}"; then
+		rollback_create "${original_branch}" "${stash_ref}"
+		error "Failed to create branch '${target_branch}'"
+	fi
 
 	if [[ -n ${stash_ref} ]]; then
 		restore_autostash "${stash_ref}"
