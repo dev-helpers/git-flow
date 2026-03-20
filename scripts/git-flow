@@ -33,9 +33,16 @@ BRANCH_TYPES="feature bugfix hotfix"
 # --- Shared Functions ---
 error() { printf '❌ Error: %s\n' "$1" >&2; exit 1; }
 
+current_branch() {
+  git symbolic-ref --quiet --short HEAD 2>/dev/null || :
+}
+
 get_branch_name() {
-  git symbolic-ref --quiet --short HEAD 2>/dev/null \
-    || error "Cannot detect current branch (are you in detached HEAD?)"
+  local branch
+  branch="$(current_branch)"
+  [[ -n "${branch}" ]] || error "Cannot detect current branch (not a git repo or HEAD is detached)"
+
+  printf '%s\n' "${branch}"
 }
 
 validate_prefix() {
@@ -86,6 +93,45 @@ initialize_transport() {
   fi
 }
 
+get_worktree_status() {
+  git status --porcelain=1 --untracked-files=normal
+}
+
+create_autostash() {
+  local label=$1
+  local stash_before stash_after
+
+  stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+  echo "→ Stashing local changes…" >&2
+  git stash push -u -m "${label}" >/dev/null || error "Failed to stash local changes"
+
+  stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+  [[ -n "${stash_after}" && "${stash_after}" != "${stash_before}" ]] \
+    || error "Expected an auto-stash to be created, but none was found"
+
+  printf '%s\n' "${stash_after}"
+}
+
+restore_autostash() {
+  local stash_ref=$1
+
+  [[ -n "${stash_ref}" ]] || return 0
+
+  echo "→ Restoring stashed changes onto current branch…"
+  if git stash apply --index "${stash_ref}"; then
+    git stash drop "${stash_ref}" >/dev/null 2>&1 || true
+    echo "✔ Restored local changes"
+    return 0
+  fi
+
+  echo "⚠️ Auto-stash could not be restored cleanly."
+  echo "⚠️ Your stash was kept as '${stash_ref}'"
+  echo "⚠️ Re-apply it manually with: git stash apply --index ${stash_ref}"
+  error "Failed to restore auto-stashed changes"
+}
+
 fetch_prune() {
   echo "→ Fetching and pruning origin…"
   git fetch --prune origin
@@ -126,12 +172,13 @@ cmd_sync() {
 
 cmd_create() {
   local do_push=false type param target_branch
+  local original_branch="" stash_ref="" worktree_status=""
 
   for arg in "$@"; do
-    case "$arg" in
+    case "${arg}" in
       --push) do_push=true ;;
-      */*)    target_branch="$arg" ;;
-      *)      [[ -z "${type:-}" ]] && type="$arg" || param="$arg" ;;
+      */*)    target_branch="${arg}" ;;
+      *)      [[ -z "${type:-}" ]] && type="${arg}" || param="${arg}" ;;
     esac
   done
 
@@ -140,20 +187,34 @@ cmd_create() {
     target_branch="${type}/${param}"
   fi
 
-  validate_prefix "$target_branch"
+  validate_prefix "${target_branch}"
 
   local base
-  base=$(detect_base "$target_branch")
+  base=$(detect_base "${target_branch}")
+  original_branch="$(current_branch)"
+  worktree_status="$(get_worktree_status)"
 
   echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
   initialize_transport
   fetch_prune
 
-  git checkout "$base" || error "Failed to checkout base branch '$base'"
-  git pull --ff-only origin "$base" || error "Failed to pull latest '$base'"
-  git checkout -b "$target_branch" || error "Failed to create branch '$target_branch'"
+  if [[ -n "${worktree_status}" ]]; then
+    if [[ -n "${original_branch}" ]]; then
+      stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch} from ${original_branch}")
+    else
+      stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch}")
+    fi
+  fi
 
-  conditional_push "$target_branch" $do_push "Created"
+  git checkout "${base}" || error "Failed to checkout base branch '${base}'"
+  git pull --ff-only origin "${base}" || error "Failed to pull latest '${base}'"
+  git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
+
+  if [[ -n "${stash_ref}" ]]; then
+    restore_autostash "${stash_ref}"
+  fi
+
+  conditional_push "${target_branch}" "$do_push" "Created"
 }
 
 cmd_propose_azure() {
