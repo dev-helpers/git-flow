@@ -236,7 +236,7 @@ cmd_create() {
   fi
 
   git checkout "${base}" || error "Failed to checkout base branch '${base}'"
-  git pull --ff-only origin "${base}" || error "Failed to pull latest '${base}'"
+  git merge --ff-only "origin/${base}"
   git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
 
   if [[ -n "${stash_ref}" ]]; then
