@@ -89,33 +89,6 @@ ensure_remote_branch_does_not_exist() {
   fi
 }
 
-check_ssh_installed() {
-  if ! command -v ssh >/dev/null 2>&1; then
-    error "SSH is not installed. Please install SSH."
-  fi
-}
-
-initialize_ssh() {
-  check_ssh_installed
-  export GIT_SSH_COMMAND="ssh -o ControlMaster=auto -o ControlPersist=45s -o ControlPath=/tmp/ssh_mux_%h_%p_%r_$USER"
-}
-
-remote_uses_ssh() {
-  local remote_name=${1:-origin}
-  local remote_url
-
-  remote_url=$(git remote get-url "$remote_name" 2>/dev/null || true)
-  [[ "$remote_url" =~ ^git@ ]] || [[ "$remote_url" =~ ^ssh:// ]]
-}
-
-initialize_transport() {
-  if remote_uses_ssh origin; then
-    initialize_ssh
-  else
-    unset GIT_SSH_COMMAND 2>/dev/null || true
-  fi
-}
-
 get_worktree_status() {
   git status --porcelain=1 --untracked-files=normal
 }
@@ -142,10 +115,10 @@ restore_autostash() {
 
   [[ -n "${stash_ref}" ]] || return 0
 
-  echo "→ Restoring stashed changes onto current branch…"
+  echo "→ Restoring stashed local changes…"
   if git stash apply --index "${stash_ref}"; then
     git stash drop "${stash_ref}" >/dev/null 2>&1 || true
-    echo "✔ Restored local changes"
+    echo "→ Restored local changes"
     return 0
   fi
 
@@ -180,17 +153,16 @@ cmd_sync() {
 
   local branch base
   branch=$(get_branch_name)
-  base=$(detect_base "$branch")
+  validate_prefix "${branch}"
+  base=$(detect_base "${branch}")
 
-  echo "[GIT-FLOW] Syncing '$branch' against '$base'"
-  validate_prefix "$branch"
-  initialize_transport
+  echo "[GIT-FLOW] Syncing '${branch}' against '${base}'"
   fetch_prune
 
-  echo "→ Rebasing '$branch' onto origin/$base…"
-  git rebase "origin/$base" --autostash || error "Rebase failed; resolve conflicts and run 'git rebase --continue'"
+  echo "→ Rebasing '${branch}' onto origin/${base}…"
+  git rebase "origin/${base}" --autostash || error "Rebase failed; resolve conflicts and run 'git rebase --continue'"
 
-  conditional_push "$branch" $do_push "Synced"
+  conditional_push "${branch}" "${do_push}" "Synced"
 }
 
 cmd_create() {
@@ -221,7 +193,6 @@ cmd_create() {
 
   ensure_local_branch_does_not_exist "${target_branch}"
 
-  initialize_transport
   fetch_prune
 
   ensure_base_branch_exists "${base}"
@@ -236,7 +207,7 @@ cmd_create() {
   fi
 
   git checkout "${base}" || error "Failed to checkout base branch '${base}'"
-  git merge --ff-only "origin/${base}"
+  git merge --ff-only "origin/${base}" || error "Failed to fast-forward '${base}' to 'origin/${base}'"
   git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
 
   if [[ -n "${stash_ref}" ]]; then
