@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# 
+#
 # See show_help above for more info
 #
 set -euo pipefail
 
 show_help() {
-  cat << EOF
+	cat <<EOF
 Usage: git-flow <command> [args]
 
 Commands:
@@ -31,250 +31,260 @@ EOF
 BRANCH_TYPES="feature bugfix hotfix"
 
 # --- Shared Functions ---
-error() { printf '❌ Error: %s\n' "$1" >&2; exit 1; }
+error() {
+	printf '❌ Error: %s\n' "$1" >&2
+	exit 1
+}
+warn() { printf '⚠️ Warning: %s\n' "$1" >&2; }
+info() { printf '→ %s\n' "$1" >&2; }
+ok() { printf '✔ %s\n' "$1" >&2; }
 
 current_branch() {
-  git symbolic-ref --quiet --short HEAD 2>/dev/null || :
+	git symbolic-ref --quiet --short HEAD 2>/dev/null || :
 }
 
 get_branch_name() {
-  local branch
-  branch="$(current_branch)"
-  [[ -n "${branch}" ]] || error "Cannot detect current branch (not a git repo or HEAD is detached)"
+	local branch
+	branch="$(current_branch)"
+	[[ -n ${branch} ]] || error "Cannot detect current branch (not a git repo or HEAD is detached)"
 
-  printf '%s\n' "${branch}"
+	printf '%s\n' "${branch}"
 }
 
 validate_prefix() {
-  local branch=$1
-  local type="${branch%%/*}"
+	local branch=$1
+	local type="${branch%%/*}"
+	local allowed_list="${BRANCH_TYPES// /, }"
 
-  for allowed in $BRANCH_TYPES; do
-    [[ "$type" == "$allowed" ]] && return 0
-  done
+	for allowed in ${BRANCH_TYPES}; do
+		[[ ${type} == "${allowed}" ]] && return 0
+	done
 
-  error "Branch must start with one of: $(echo "$BRANCH_TYPES" | tr ' ' ', ')"
+	error "Branch must start with one of: ${allowed_list}"
 }
 
 detect_base() {
-  local branch=$1
-  local type="${branch%%/*}"
+	local branch=$1
+	local type="${branch%%/*}"
 
-  case "$type" in
-    hotfix) echo main ;;
-    *)      echo develop ;;
-  esac
+	case "${type}" in
+	hotfix) echo main ;;
+	*) echo develop ;;
+	esac
 }
 
 ensure_local_branch_does_not_exist() {
-  local branch=$1
+	local branch=$1
 
-  if git show-ref --verify --quiet "refs/heads/${branch}"; then
-    error "Local branch '${branch}' already exists"
-  fi
+	if git show-ref --verify --quiet "refs/heads/${branch}"; then
+		error "Local branch '${branch}' already exists"
+	fi
 }
 
 ensure_base_branch_exists() {
-  local base=$1
+	local base=$1
 
-  git show-ref --verify --quiet "refs/remotes/origin/${base}" \
-    || error "Base branch 'origin/${base}' was not found"
+	git show-ref --verify --quiet "refs/remotes/origin/${base}" ||
+		error "Base branch 'origin/${base}' was not found"
 }
 
 ensure_remote_branch_does_not_exist() {
-  local branch=$1
+	local branch=$1
 
-  if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
-    error "Remote branch '${branch}' already exists on origin"
-  fi
+	if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+		error "Remote branch '${branch}' already exists on origin"
+	fi
 }
 
 get_worktree_status() {
-  git status --porcelain=1 --untracked-files=normal
+	git status --porcelain=1 --untracked-files=normal
 }
 
 create_autostash() {
-  local label=$1
-  local stash_before stash_after
+	local label=$1
+	local stash_before stash_after
 
-  stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+	stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
 
-  echo "→ Stashing local changes…" >&2
-  git stash push -u -m "${label}" >/dev/null || error "Failed to stash local changes"
+	info "Stashing local changes…"
+	git stash push -u -m "${label}" >/dev/null || error "Failed to stash local changes"
 
-  stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+	stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
 
-  [[ -n "${stash_after}" && "${stash_after}" != "${stash_before}" ]] \
-    || error "Expected an auto-stash to be created, but none was found"
+	[[ -n ${stash_after} && ${stash_after} != "${stash_before}" ]] ||
+		error "Expected an auto-stash to be created, but none was found"
 
-  printf '%s\n' "${stash_after}"
+	printf '%s\n' "${stash_after}"
 }
 
 restore_autostash() {
-  local stash_ref=$1
+	local stash_ref=$1
 
-  [[ -n "${stash_ref}" ]] || return 0
+	[[ -n ${stash_ref} ]] || return 0
 
-  echo "→ Restoring stashed local changes…"
-  if git stash apply --index "${stash_ref}"; then
-    git stash drop "${stash_ref}" >/dev/null 2>&1 || true
-    echo "→ Restored local changes"
-    return 0
-  fi
+	info "Restoring stashed local changes…"
+	if git stash apply --index "${stash_ref}"; then
+		git stash drop "${stash_ref}" >/dev/null 2>&1 || true
+		info "Restored local changes"
+		return 0
+	fi
 
-  echo "⚠️ Auto-stash could not be restored cleanly."
-  echo "⚠️ Your stash was kept as '${stash_ref}'"
-  echo "⚠️ Re-apply it manually with: git stash apply --index ${stash_ref}"
-  error "Failed to restore auto-stashed changes"
+	warn "Auto-stash could not be restored cleanly."
+	warn "Your stash was kept as '${stash_ref}'"
+	warn "Re-apply it manually with: git stash apply --index ${stash_ref}"
+	error "Failed to restore auto-stashed changes"
 }
 
 fetch_prune() {
-  echo "→ Fetching and pruning origin…"
-  git fetch --prune origin
+	info "Fetching and pruning origin…"
+	git fetch --prune origin
 }
 
 conditional_push() {
-  local branch=$1 do_push=$2 action=$3
-  if $do_push; then
-    echo "→ Pushing '${branch}'…"
-    git push --force-with-lease origin "$branch" || error "Push failed for branch '${branch}'"
-    echo "✔ ${action} and pushed '${branch}'"
-  else
-    echo "✔ ${action} '${branch}'"
-  fi
+	local branch=$1 do_push=$2 action=$3
+	if ${do_push}; then
+		info "Pushing '${branch}'…"
+		git push --force-with-lease origin "${branch}" || error "Push failed for branch '${branch}'"
+		ok "${action} and pushed '${branch}'"
+	else
+		ok "${action} '${branch}'"
+	fi
 }
 
 # --- Commands ---
 cmd_sync() {
-  local do_push=false
-  if [[ "${1-}" == "--push" ]]; then do_push=true; shift; fi
+	local do_push=false
+	if [[ ${1-} == "--push" ]]; then
+		do_push=true
+		shift
+	fi
 
-  [[ $# -eq 0 ]] || error "Usage: git flow sync [--push]"
+	[[ $# -eq 0 ]] || error "Usage: git flow sync [--push]"
 
-  local branch base
-  branch=$(get_branch_name)
-  validate_prefix "${branch}"
-  base=$(detect_base "${branch}")
+	local branch base
+	branch=$(get_branch_name)
+	validate_prefix "${branch}"
+	base=$(detect_base "${branch}")
 
-  echo "[GIT-FLOW] Syncing '${branch}' against '${base}'"
-  fetch_prune
+	echo "[GIT-FLOW] Syncing '${branch}' against '${base}'"
+	fetch_prune
 
-  echo "→ Rebasing '${branch}' onto origin/${base}…"
-  git rebase "origin/${base}" --autostash || error "Rebase failed; resolve conflicts and run 'git rebase --continue'"
+	info "Rebasing '${branch}' onto origin/${base}…"
+	git rebase "origin/${base}" --autostash || error "Rebase failed; resolve conflicts and run 'git rebase --continue'"
 
-  conditional_push "${branch}" "${do_push}" "Synced"
+	conditional_push "${branch}" "${do_push}" "Synced"
 }
 
 cmd_create() {
-  local do_push=false type param target_branch
-  local original_branch="" stash_ref="" worktree_status=""
+	local do_push=false type param target_branch
+	local original_branch="" stash_ref="" worktree_status=""
 
-  for arg in "$@"; do
-    case "${arg}" in
-      --push) do_push=true ;;
-      */*)    target_branch="${arg}" ;;
-      *)      [[ -z "${type:-}" ]] && type="${arg}" || param="${arg}" ;;
-    esac
-  done
+	for arg in "$@"; do
+		case "${arg}" in
+		--push) do_push=true ;;
+		*/*) target_branch="${arg}" ;;
+		*) [[ -z ${type-} ]] && type="${arg}" || param="${arg}" ;;
+		esac
+	done
 
-  if [[ -z "${target_branch:-}" ]]; then
-    [[ -n "${type:-}" && -n "${param:-}" ]] || error "Usage: git flow {${BRANCH_TYPES// /|}} [--push] <name|type/name>"
-    target_branch="${type}/${param}"
-  fi
+	if [[ -z ${target_branch-} ]]; then
+		[[ -n ${type-} && -n ${param-} ]] || error "Usage: git flow {${BRANCH_TYPES// /|}} [--push] <name|type/name>"
+		target_branch="${type}/${param}"
+	fi
 
-  validate_prefix "${target_branch}"
+	validate_prefix "${target_branch}"
 
-  local base
-  base=$(detect_base "${target_branch}")
-  original_branch="$(current_branch)"
-  worktree_status="$(get_worktree_status)"
+	local base
+	base=$(detect_base "${target_branch}")
+	original_branch="$(current_branch)"
+	worktree_status="$(get_worktree_status)"
 
-  echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
+	echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
 
-  ensure_local_branch_does_not_exist "${target_branch}"
+	ensure_local_branch_does_not_exist "${target_branch}"
 
-  fetch_prune
+	fetch_prune
 
-  ensure_base_branch_exists "${base}"
-  ensure_remote_branch_does_not_exist "${target_branch}"
+	ensure_base_branch_exists "${base}"
+	ensure_remote_branch_does_not_exist "${target_branch}"
 
-  if [[ -n "${worktree_status}" ]]; then
-    if [[ -n "${original_branch}" ]]; then
-      stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch} from ${original_branch}")
-    else
-      stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch}")
-    fi
-  fi
+	if [[ -n ${worktree_status} ]]; then
+		if [[ -n ${original_branch} ]]; then
+			stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch} from ${original_branch}")
+		else
+			stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch}")
+		fi
+	fi
 
-  git checkout "${base}" || error "Failed to checkout base branch '${base}'"
-  git merge --ff-only "origin/${base}" || error "Failed to fast-forward '${base}' to 'origin/${base}'"
-  git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
+	git checkout "${base}" || error "Failed to checkout base branch '${base}'"
+	git merge --ff-only "origin/${base}" || error "Failed to fast-forward '${base}' to 'origin/${base}'"
+	git checkout -b "${target_branch}" || error "Failed to create branch '${target_branch}'"
 
-  if [[ -n "${stash_ref}" ]]; then
-    restore_autostash "${stash_ref}"
-  fi
+	if [[ -n ${stash_ref} ]]; then
+		restore_autostash "${stash_ref}"
+	fi
 
-  conditional_push "${target_branch}" "${do_push}" "Created"
+	conditional_push "${target_branch}" "${do_push}" "Created"
 }
 
 cmd_propose_azure() {
-  local branch base_url remote_url url target_ref
+	local branch base_url remote_url url target_ref
 
-  branch=$(get_branch_name)
-  echo "[GIT-FLOW] Generating PR creation URL for '$branch'…"
+	branch=$(get_branch_name)
+	echo "[GIT-FLOW] Generating PR creation URL for '${branch}'…"
 
-  base_url=""
-  if command -v az >/dev/null 2>&1 &&
-     base_url=$(az repos show --detect --output tsv --query webUrl 2>/dev/null); then
-    :
-  fi
+	base_url=""
+	if command -v az >/dev/null 2>&1 &&
+		base_url=$(az repos show --detect --output tsv --query webUrl 2>/dev/null); then
+		:
+	fi
 
-  if [[ -z "$base_url" ]]; then
-    remote_url=$(git remote get-url origin 2>/dev/null) || error "Could not get remote URL from 'origin'"
+	if [[ -z ${base_url} ]]; then
+		remote_url=$(git remote get-url origin 2>/dev/null) || error "Could not get remote URL from 'origin'"
 
-    if [[ "$remote_url" =~ ^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)(\.git)?$ ]]; then
-      base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
-    elif [[ "$remote_url" =~ ^https://dev.azure.com/([^/]+)/([^/]+)/_git/([^/]+)(\.git)?$ ]]; then
-      base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
-    else
-      error "Could not detect Azure DevOps repository from '$remote_url'"
-    fi
-  fi
+		if [[ ${remote_url} =~ ^git@ssh\.dev\.azure\.com:v3/([^/]+)/([^/]+)/([^/]+)(\.git)?$ ]]; then
+			base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
+		elif [[ ${remote_url} =~ ^https://dev.azure.com/([^/]+)/([^/]+)/_git/([^/]+)(\.git)?$ ]]; then
+			base_url="https://dev.azure.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/_git/${BASH_REMATCH[3]}"
+		else
+			error "Could not detect Azure DevOps repository from '${remote_url}'"
+		fi
+	fi
 
-  target_ref=$(detect_base "$branch")
-  url="${base_url%/}/pullrequestcreate?sourceRef=${branch}&targetRef=${target_ref}"
+	target_ref=$(detect_base "${branch}")
+	url="${base_url%/}/pullrequestcreate?sourceRef=${branch}&targetRef=${target_ref}"
 
-  xdg-open "$url" >/dev/null 2>&1 \
-    || open "$url" >/dev/null 2>&1 \
-    || echo "✔ Open this URL in your browser: $url"
+	xdg-open "${url}" >/dev/null 2>&1 ||
+		open "${url}" >/dev/null 2>&1 ||
+		ok "Open this URL in your browser: ${url}"
 }
 
 # --- Dispatcher ---
 cmd=${1-}
 shift || true
 
-case "$cmd" in
-  --help)
-    show_help
-    ;;
-  sync)
-    cmd_sync "$@"
-    ;;
-  propose|pr)
-    cmd_propose_azure
-    ;;
-  *)
-    for type in $BRANCH_TYPES; do
-      if [[ "$cmd" == "$type" ]]; then
-        cmd_create "$type" "$@"
-        exit
-      elif [[ "$cmd" == "$type/"* ]]; then
-        cmd_create "$cmd" "$@"
-        exit
-      fi
-    done
+case "${cmd}" in
+--help)
+	show_help
+	;;
+sync)
+	cmd_sync "$@"
+	;;
+propose | pr)
+	cmd_propose_azure
+	;;
+*)
+	for type in ${BRANCH_TYPES}; do
+		if [[ ${cmd} == "${type}" ]]; then
+			cmd_create "${type}" "$@"
+			exit
+		elif [[ ${cmd} == "${type}/"* ]]; then
+			cmd_create "${cmd}" "$@"
+			exit
+		fi
+	done
 
-    echo "Usage: git flow {sync,${BRANCH_TYPES// /,},propose} [args]"
-    exit 1
-    ;;
+	echo "Usage: git flow {sync,${BRANCH_TYPES// /,},propose} [args]"
+	exit 1
+	;;
 esac
