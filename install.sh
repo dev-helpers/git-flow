@@ -35,7 +35,7 @@ while [[ "$#" -gt 0 ]]; do
   esac
 done
 
-if [ "$CONFIG_ALIAS" = true ]; then
+if [[ "${CONFIG_ALIAS}" = true ]]; then
   git config --global alias.flow     "!${GIT_FLOW}"
   git config --global alias.sync     "!${GIT_FLOW} sync"
   git config --global alias.feature  "!${GIT_FLOW} feature"

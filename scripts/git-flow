@@ -66,6 +66,29 @@ detect_base() {
   esac
 }
 
+ensure_local_branch_does_not_exist() {
+  local branch=$1
+
+  if git show-ref --verify --quiet "refs/heads/${branch}"; then
+    error "Local branch '${branch}' already exists"
+  fi
+}
+
+ensure_base_branch_exists() {
+  local base=$1
+
+  git show-ref --verify --quiet "refs/remotes/origin/${base}" \
+    || error "Base branch 'origin/${base}' was not found"
+}
+
+ensure_remote_branch_does_not_exist() {
+  local branch=$1
+
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+    error "Remote branch '${branch}' already exists on origin"
+  fi
+}
+
 check_ssh_installed() {
   if ! command -v ssh >/dev/null 2>&1; then
     error "SSH is not installed. Please install SSH."
@@ -195,8 +218,14 @@ cmd_create() {
   worktree_status="$(get_worktree_status)"
 
   echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
+
+  ensure_local_branch_does_not_exist "${target_branch}"
+
   initialize_transport
   fetch_prune
+
+  ensure_base_branch_exists "${base}"
+  ensure_remote_branch_does_not_exist "${target_branch}"
 
   if [[ -n "${worktree_status}" ]]; then
     if [[ -n "${original_branch}" ]]; then
@@ -214,7 +243,7 @@ cmd_create() {
     restore_autostash "${stash_ref}"
   fi
 
-  conditional_push "${target_branch}" "$do_push" "Created"
+  conditional_push "${target_branch}" "${do_push}" "Created"
 }
 
 cmd_propose_azure() {
