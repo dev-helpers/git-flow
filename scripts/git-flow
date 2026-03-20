@@ -34,7 +34,8 @@ BRANCH_TYPES="feature bugfix hotfix"
 error() { printf '❌ Error: %s\n' "$1" >&2; exit 1; }
 
 get_branch_name() {
-  git rev-parse --abbrev-ref HEAD 2>/dev/null || error "Not a git repo or cannot detect current branch"
+  git symbolic-ref --quiet --short HEAD 2>/dev/null \
+    || error "Cannot detect current branch (are you in detached HEAD?)"
 }
 
 validate_prefix() {
