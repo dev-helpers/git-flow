@@ -6,36 +6,57 @@ set -euo pipefail
 
 show_help() {
 	cat <<EOF
-Usage: git-flow <command> [args]
+Usage:
+  git feat <name> [--push]
+  git fix <name> [--push]
+  git hotfix <name> [--push]
+  git sync [--push]
+  git pr
 
 Commands:
-  sync        Sync current branch with its base (feature/bugfix → develop or hotfix → main)
-  feature     Create a new feature branch (from develop)
-  hotfix      Create a new hotfix branch (from main)
-  bugfix      Create a new bugfix branch (from develop)
-  propose     Open PR for current branch in Azure DevOps
+  feat        Create a feature branch from develop
+  fix         Create a bugfix branch from develop
+  hotfix      Create a hotfix branch from main
+  sync        Rebase current branch onto its base branch
+  pr          Open the PR creation page in Azure DevOps
 
-Options:
-  --push      Push the branch after creating/syncing
-  --help      Show this help message
+Also supported (verbose equivalents):
+  git feature <name> [--push]
+  git bugfix <name> [--push]
+  git flow <type/name> [--push]
+  git propose
+  git flow help
 
-Example Usage:
+Notes:
+  - Names with spaces must be quoted
+  - Spaces in names are converted to '-'
+  - Internal '/' is allowed (example: api/login)
+
+Examples:
+  git feat login
+  git feat login --push
+  git feat api/login
+  git fix issue-123
+  git fix issue-123 --push
   git sync
-  git feature login
-  git bugfix issue-123 --push
+  git sync --push
   git pr
 EOF
 }
 
 # --- Configuration ---
 BRANCH_TYPES="feature bugfix hotfix"
+CREATE_USAGE_HINT="Use: git feat <name>, git fix <name> or git hotfix <name>. Quote names with spaces."
 
 # --- Shared Functions ---
 error() {
 	printf '❌ Error: %s\n' "$1" >&2
 	exit 1
 }
-warn() { printf ' ! Warning: %s\n' "$1" >&2; }
+create_usage_error() {
+	error "$1. ${CREATE_USAGE_HINT}"
+}
+warn() { printf ' ⚠ Warning: %s\n' "$1" >&2; }
 info() { printf ' → %s\n' "$1" >&2; }
 ok() { printf '✔ %s\n' "$1" >&2; }
 
@@ -75,10 +96,25 @@ detect_base() {
 
 ensure_local_branch_does_not_exist() {
 	local branch=$1
+	local parent="${branch%/*}"
+	local descendants
 
 	if git show-ref --verify --quiet "refs/heads/${branch}"; then
 		error "Local branch '${branch}' already exists"
 	fi
+
+	while [[ -n ${parent} && ${parent} != "${branch}" ]]; do
+		if git show-ref --verify --quiet "refs/heads/${parent}"; then
+			error "Cannot create local branch '${branch}' because '${parent}' already exists"
+		fi
+
+		[[ ${parent} == */* ]] || break
+		parent="${parent%/*}"
+	done
+
+	descendants=$(git for-each-ref --format='%(refname:short)' "refs/heads/${branch}/*")
+	[[ -z ${descendants} ]] ||
+		error "Cannot create local branch '${branch}' because nested local branches already exist under it"
 }
 
 ensure_base_branch_exists() {
@@ -90,10 +126,25 @@ ensure_base_branch_exists() {
 
 ensure_remote_branch_does_not_exist() {
 	local branch=$1
+	local parent="${branch%/*}"
+	local descendants
 
 	if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
 		error "Remote branch '${branch}' already exists on origin"
 	fi
+
+	while [[ -n ${parent} && ${parent} != "${branch}" ]]; do
+		if git show-ref --verify --quiet "refs/remotes/origin/${parent}"; then
+			error "Cannot create remote branch '${branch}' because '${parent}' already exists on origin"
+		fi
+
+		[[ ${parent} == */* ]] || break
+		parent="${parent%/*}"
+	done
+
+	descendants=$(git for-each-ref --format='%(refname:short)' "refs/remotes/origin/${branch}/*")
+	[[ -z ${descendants} ]] ||
+		error "Cannot create remote branch '${branch}' because nested remote branches already exist under it"
 }
 
 get_worktree_status() {
@@ -169,6 +220,39 @@ rollback_create() {
 	fi
 }
 
+validate_branch_name_input() {
+	local name=$1
+
+	[[ -n ${name} ]] || error "Branch name cannot be empty"
+	[[ ${name} != /* ]] || error "Branch name cannot start with '/'"
+	[[ ${name} != */ ]] || error "Branch name cannot end with '/'"
+	[[ ${name} != *"//"* ]] || error "Branch name cannot contain consecutive '/'"
+}
+
+normalize_branch_name() {
+	local name=$1
+
+	name="${name#"${name%%[![:space:]]*}"}"
+	name="${name%"${name##*[![:space:]]}"}"
+
+	[[ -n ${name} ]] || error "Branch name cannot be empty"
+
+	name="${name// /-}"
+
+	while [[ ${name} == *"--"* ]]; do
+		name="${name//--/-}"
+	done
+
+	printf '%s\n' "${name}"
+}
+
+validate_branch_ref() {
+	local branch=$1
+
+	git check-ref-format --branch "${branch}" >/dev/null 2>&1 ||
+		error "Invalid branch name '${branch}'"
+}
+
 fetch_prune() {
 	info "Fetching and pruning origin…"
 	git fetch --prune origin
@@ -210,28 +294,49 @@ cmd_sync() {
 }
 
 cmd_create() {
-	local do_push=false type param target_branch
+	local selector=${1-}
+	shift || true
+
+	local do_push=false
+	local target_branch="" raw_name="" normalized_name=""
 	local original_branch="" stash_ref="" worktree_status=""
+	local positional=()
+
+	[[ -n ${selector} ]] || create_usage_error "Missing branch type or name"
 
 	for arg in "$@"; do
 		case "${arg}" in
 		--push) do_push=true ;;
-		*/*) target_branch="${arg}" ;;
-		*) [[ -z ${type-} ]] && type="${arg}" || param="${arg}" ;;
+		-*) create_usage_error "Unknown option '${arg}'" ;;
+		*) positional+=("${arg}") ;;
 		esac
 	done
 
-	if [[ -z ${target_branch-} ]]; then
-		[[ -n ${type-} && -n ${param-} ]] || error "Usage: git flow {${BRANCH_TYPES// /|}} [--push] <name|type/name>"
-		target_branch="${type}/${param}"
+	if [[ ${selector} == */* ]]; then
+		case ${#positional[@]} in
+		0) target_branch="${selector}" ;;
+		*) create_usage_error "Do not pass extra arguments when using '<type/name>'" ;;
+		esac
+	else
+		case ${#positional[@]} in
+		0) create_usage_error "Missing branch name" ;;
+		1) raw_name="${positional[0]}" ;;
+		*) create_usage_error "Too many arguments" ;;
+		esac
+
+		validate_branch_name_input "${raw_name}"
+		normalized_name="$(normalize_branch_name "${raw_name}")"
+		validate_branch_name_input "${normalized_name}"
+
+		target_branch="${selector}/${normalized_name}"
 	fi
 
 	validate_prefix "${target_branch}"
+	validate_branch_ref "${target_branch}"
 
 	local base
 	base=$(detect_base "${target_branch}")
 	original_branch="$(current_branch)"
-	worktree_status="$(get_worktree_status)"
 
 	echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
 
@@ -242,6 +347,7 @@ cmd_create() {
 	ensure_base_branch_exists "${base}"
 	ensure_remote_branch_does_not_exist "${target_branch}"
 
+	worktree_status="$(get_worktree_status)"
 	if [[ -n ${worktree_status} ]]; then
 		if [[ -n ${original_branch} ]]; then
 			stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch} from ${original_branch}")
@@ -309,7 +415,10 @@ cmd=${1-}
 shift || true
 
 case "${cmd}" in
---help)
+"")
+	show_help
+	;;
+--help | help)
 	show_help
 	;;
 sync)
@@ -329,7 +438,7 @@ propose | pr)
 		fi
 	done
 
-	echo "Usage: git flow {sync,${BRANCH_TYPES// /,},propose} [args]"
+	warn "Unknown command '${cmd}'. Run 'git flow' or 'git flow help'."
 	exit 1
 	;;
 esac
