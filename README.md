@@ -1,113 +1,144 @@
 # Git Flow CLI
 
-Ferramenta única para gerenciar branches de *feature*, *bugfix*, *hotfix* e abertura de pull requests no Azure DevOps via linha de comando.
+Ferramenta única para criar branches de **feature**, **bugfix** e **hotfix**, sincronizar sua branch atual com a base correta e abrir pull requests no Azure DevOps
 
 ## Instalação
 
-Execute o instalador via `curl` ou `wget` (sem precisar de configuração extra).
+### Com aliases Git
 
-Você pode instalar com ou sem configuração de aliases Git. Escolha uma das formas abaixo:
-
-### 1. Padrão, com aliases
+Recomendado para o dia a dia, permite usar comandos mais curtos e rápidos como `git feat`, `git fix`, `git sync` e `git pr`
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dev-helpers/git-flow/main/install.sh | bash
 ```
 
-O instalador irá (automaticamente):
+Isso instala o binário `git-flow` e configura os aliases mais usados:
 
-1. Baixar o binário `git-flow` para `/usr/local/bin/git-flow` (ou diretório padrão do sistema).
-2. Tornar o arquivo executável (`chmod +x`).
-3. Configurar aliases globais no Git:
+* `git feat` → `git-flow feature`
+* `git fix` → `git-flow bugfix`
+* `git hotfix` → `git-flow hotfix`
+* `git sync` → `git-flow sync`
+* `git pr` → `git-flow propose`
 
-   * `git sync` → `git-flow sync`
-   * `git feature` → `git-flow feature`
-   * `git bugfix` → `git-flow bugfix`
-   * `git hotfix` → `git-flow hotfix`
-   * `git propose` e `git pr` → `git-flow propose`
+Também ficam disponíveis os equivalentes mais verbosos:
 
-### 2. Sem aliases
+* `git feature`
+* `git bugfix`
+* `git propose`
+
+### Sem aliases
+
+Útil para quem prefere evitar alterações na configuração global do Git e usar o binário diretamente com comandos explícitos como `git-flow feature` e `git-flow sync`
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/dev-helpers/git-flow/main/install.sh | bash -s -- --no-alias
 ```
 
-Nesse modo, você deve invocar diretamente o comando git-flow:
+Nesse modo, use o binário diretamente:
 
-   * `git-flow sync`
-   * `git-flow feature`
-   * `git-flow bugfix`
-   * `git-flow hotfix`
-   * `git-flow propose` e `git-flow pr`
+* `git-flow feature <name>`
+* `git-flow bugfix <name>`
+* `git-flow hotfix <name>`
+* `git-flow sync`
+* `git-flow propose`
 
-## Uso
+## Comandos mais usados
 
-Todos os comandos seguem o padrão: `git <alias> <comando> [--push] [args]`
+### Criar branches
 
-| Alias                     | Comando   | Descrição                                                  |
-| ------------------------- | ----------| ---------------------------------------------------------- |
-| `git sync`                | `sync`    | Rebase da branch atual com `develop` (ou `main` se hotfix) |
-| `git feature`             | `feature` | Cria nova branch de *feature* a partir de `develop`        |
-| `git bugfix`              | `bugfix`  | Cria nova branch de *bugfix* a partir de `develop`         |
-| `git hotfix`              | `hotfix`  | Cria nova branch de *hotfix* a partir de `main`            |
-| `git propose` ou `git pr` | `propose` | Abre página de PR no Azure DevOps para a branch atual      |
-
-### Flag comum: --push
-
-* A flag `--push` adiciona um push ao final dos comandos: `git sync`, `git feature`, `git bugfix` e `git hotfix`.
-
-## Exemplos
-
-### 1. Sincronizar branch local
+Use estes comandos para iniciar uma nova branch já no padrão esperado pelo time
 
 ```bash
-# Traz as últimas alterações da branch remota develop (ou main, se hotfix) para sua branch local
-git sync
-
-# Traz as últimas alterações e também envia suas alterações locais para sua branch remota
-git sync --push
-
-# Equivalente usando alias mais curto
-git sync-push
+git feat <name> [--push]
+git fix <name> [--push]
+git hotfix <name> [--push]
 ```
 
-#### Em caso de conflito:
+Exemplos:
 
 ```bash
-git status
-git add <arquivo>
-git rebase --continue
-```
-
-### 2. Criar branch de feature
-
-```bash
-# Cria feature/login localmente
-git feature login
-
-# Equivalente usando barra
-git-flow feature/login
-
-# Cria feature/login localmente e remoto
-git feature login --push
-```
-
-### 3. Criar branch de bugfix/hotfix
-
-```bash
-# Bugfix sem push
-git bugfix issue-123
-
-# Hotfix com push
+git feat login
+git feat api/login
+git feat "login oauth" --push
+git fix issue-123
 git hotfix 1.0.1 --push
 ```
 
-### 4. Abrir pull request
+Regras:
+
+* `feat` cria branch a partir de `develop`
+* `fix` cria branch a partir de `develop`
+* `hotfix` cria branch a partir de `main`
+* `--push` cria branch e faz push em seguida
+
+### Sincronizar a branch atual
+
+Use este comando para trazer a base mais recente para a branch em que você está trabalhando
 
 ```bash
-# Abre no navegador padrão a página de criação de PR
+git sync [--push]
+```
+
+Exemplos:
+
+```bash
+git sync
+git sync --push
+```
+
+Regras:
+
+* Se sua branch atual é `hotfix/*` então sincroniza com `main`
+* Se sua branch atual é `feature/*` ou `bugfix/*` então sincroniza com `develop`
+* Adicionar `--push` executa git push logo após sincronizar sua branch atual
+
+### Abrir pull request
+
+Use este comando para abrir rapidamente no navegador a tela de criação de PR no Azure DevOps
+
+```bash
 git pr
+```
+
+Também funciona:
+
+```bash
 git propose
+git-flow propose
+```
+
+## Comportamento durante a criação da branch
+
+Se houver mudanças locais não commitadas:
+
+* o script faz **auto-stash**
+* cria a branch nova
+* tenta restaurar as mudanças na branch criada
+
+Se houver falha depois do stash, o script tenta:
+
+* voltar para a branch original
+* restaurar o stash
+
+Se a restauração não puder ser feita automaticamente, o stash é preservado e o comando avisa o que fazer
+
+## Validações feitas pelo script
+
+Antes de criar a branch, o script valida:
+
+* se a branch local já existe
+* se a branch remota já existe
+* se a branch base existe no `origin`
+* conflitos de path entre branches
+
+## Ajuda
+
+Você pode abrir a ajuda com:
+
+```bash
+git flow
+git flow help
+git-flow --help
 ```
 
 ## License
