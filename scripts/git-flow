@@ -165,7 +165,7 @@ create_autostash() {
 	[[ -n ${stash_after} && ${stash_after} != "${stash_before}" ]] ||
 		error "Expected an auto-stash to be created, but none was found"
 
-	printf '%s\n' "${stash_after}"
+	printf '%s\n' 'stash@{0}'
 }
 
 restore_autostash() {
@@ -174,8 +174,7 @@ restore_autostash() {
 	[[ -n ${stash_ref} ]] || return 0
 
 	info "Restoring stashed local changes…"
-	if git stash apply --index "${stash_ref}"; then
-		git stash drop "${stash_ref}" >/dev/null 2>&1 || true
+	if git stash pop --index "${stash_ref}"; then
 		info "Restored local changes"
 		return 0
 	fi
@@ -207,8 +206,7 @@ rollback_create() {
 	if [[ -n ${stash_ref} ]]; then
 		if ${returned_to_original}; then
 			info "Restoring stashed local changes to '${original_branch}'…"
-			if git stash apply --index "${stash_ref}" >/dev/null 2>&1; then
-				git stash drop "${stash_ref}" >/dev/null 2>&1 || true
+			if git stash pop --index "${stash_ref}" >/dev/null 2>&1; then
 				info "Restored local changes to '${original_branch}'"
 			else
 				warn "Could not restore stashed changes automatically"
