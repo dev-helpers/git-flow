@@ -168,8 +168,59 @@ create_autostash() {
 	printf '%s\n' 'stash@{0}'
 }
 
+find_stash_ref_by_label() {
+	local label=$1
+	local ref subject
+	local stash_entries=""
+
+	[[ -n ${label} ]] || return 0
+
+	stash_entries="$(git stash list --format='%gd%x09%gs')" || return 0
+	[[ -n ${stash_entries} ]] || return 0
+
+	while IFS=$'\t' read -r ref subject; do
+		if [[ ${subject} == *"${label}"* ]]; then
+			printf '%s\n' "${ref}"
+			return 0
+		fi
+	done <<< "${stash_entries}"
+
+	return 0
+}
+
+print_autostash_recovery_guidance() {
+	local stash_label=${1-}
+	local recovery_ref="" quoted_label=""
+
+	recovery_ref="$(find_stash_ref_by_label "${stash_label}")"
+	if [[ -n ${stash_label} ]]; then
+		printf -v quoted_label '%q' "${stash_label}"
+	fi
+
+	warn "Auto-stash could not be restored automatically."
+	if [[ -n ${recovery_ref} ]]; then
+		warn "Your changes were kept in the stash list. Inspect them with: git stash show --stat --include-untracked ${recovery_ref}"
+	else
+		warn "Your changes were kept in the stash list."
+	fi
+	warn "Review the current state with: git status"
+	warn "If git status already shows your changes, do not apply the stash again."
+	if [[ -n ${recovery_ref} ]]; then
+		warn "If your changes are not present, run: git stash apply ${recovery_ref}"
+		warn "If apply reports conflicts, resolve them and stage files manually with: git add <files>"
+	else
+		warn "Find the stash ref with: git stash list --format='%gd %gs'"
+		warn "Then apply it with: git stash apply <stash-ref>"
+		warn "If apply reports conflicts, resolve them and stage files manually with: git add <files>"
+	fi
+	if [[ -n ${stash_label} ]]; then
+		warn "If the stash ref changes later, find it with: git stash list --format='%gd %gs' | grep -F -- ${quoted_label}"
+	fi
+}
+
 restore_autostash() {
 	local stash_ref=$1
+	local stash_label=${2-}
 
 	[[ -n ${stash_ref} ]] || return 0
 
@@ -179,15 +230,14 @@ restore_autostash() {
 		return 0
 	fi
 
-	warn "Auto-stash could not be restored cleanly."
-	warn "Your stash was kept as '${stash_ref}'"
-	warn "Re-apply it manually with: git stash apply --index ${stash_ref}"
+	print_autostash_recovery_guidance "${stash_label}"
 	error "Failed to restore auto-stashed changes"
 }
 
 rollback_create() {
 	local original_branch=$1
 	local stash_ref=${2-}
+	local stash_label=${3-}
 	local returned_to_original=false
 
 	warn "Branch creation failed. Attempting to restore previous state…"
@@ -209,11 +259,10 @@ rollback_create() {
 			if git stash pop --index "${stash_ref}" >/dev/null 2>&1; then
 				info "Restored local changes to '${original_branch}'"
 			else
-				warn "Could not restore stashed changes automatically"
-				warn "Your stash was kept as '${stash_ref}'"
+				print_autostash_recovery_guidance "${stash_label}"
 			fi
 		else
-			warn "Your stash was kept as '${stash_ref}'"
+			print_autostash_recovery_guidance "${stash_label}"
 		fi
 	fi
 }
@@ -297,7 +346,7 @@ cmd_create() {
 
 	local do_push=false
 	local target_branch="" raw_name="" normalized_name=""
-	local original_branch="" stash_ref="" worktree_status=""
+	local original_branch="" stash_ref="" worktree_status="" auto_stash_label=""
 	local positional=()
 
 	[[ -n ${selector} ]] || create_usage_error "Missing branch type or name"
@@ -348,29 +397,30 @@ cmd_create() {
 	worktree_status="$(get_worktree_status)"
 	if [[ -n ${worktree_status} ]]; then
 		if [[ -n ${original_branch} ]]; then
-			stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch} from ${original_branch}")
+			auto_stash_label="git-flow:auto-stash:$(date -u +%Y%m%dT%H%M%SZ):${target_branch}:from:${original_branch}"
 		else
-			stash_ref=$(create_autostash "git-flow:auto-stash before creating ${target_branch}")
+			auto_stash_label="git-flow:auto-stash:$(date -u +%Y%m%dT%H%M%SZ):${target_branch}"
 		fi
+		stash_ref=$(create_autostash "${auto_stash_label}")
 	fi
 
 	if ! git checkout "${base}"; then
-		rollback_create "${original_branch}" "${stash_ref}"
+		rollback_create "${original_branch}" "${stash_ref}" "${auto_stash_label}"
 		error "Failed to checkout base branch '${base}'"
 	fi
 
 	if ! git merge --ff-only "origin/${base}"; then
-		rollback_create "${original_branch}" "${stash_ref}"
+		rollback_create "${original_branch}" "${stash_ref}" "${auto_stash_label}"
 		error "Failed to fast-forward '${base}' to 'origin/${base}'"
 	fi
 
 	if ! git checkout -b "${target_branch}"; then
-		rollback_create "${original_branch}" "${stash_ref}"
+		rollback_create "${original_branch}" "${stash_ref}" "${auto_stash_label}"
 		error "Failed to create branch '${target_branch}'"
 	fi
 
 	if [[ -n ${stash_ref} ]]; then
-		restore_autostash "${stash_ref}"
+		restore_autostash "${stash_ref}" "${auto_stash_label}"
 	fi
 
 	conditional_push "${target_branch}" "${do_push}" "Created"
