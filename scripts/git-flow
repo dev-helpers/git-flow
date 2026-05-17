@@ -151,6 +151,44 @@ get_worktree_status() {
 	git status --porcelain=1 --untracked-files=normal
 }
 
+ensure_no_unmerged_paths() {
+	local unmerged_paths=""
+
+	unmerged_paths="$(git ls-files -u)" ||
+		error "Could not inspect repository conflicts"
+
+	[[ -z ${unmerged_paths} ]] ||
+		error "Repository has conflicts/unmerged paths. Run 'git status', resolve them, then try again."
+}
+
+ensure_no_git_operation_in_progress() {
+	local rebase_apply="" rebase_merge=""
+
+	if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+		error "A merge is in progress. Run 'git status', then finish or abort it before using git-flow."
+	fi
+
+	if git rev-parse -q --verify CHERRY_PICK_HEAD >/dev/null 2>&1; then
+		error "A cherry-pick is in progress. Run 'git status', then finish or abort it before using git-flow."
+	fi
+
+	if git rev-parse -q --verify REVERT_HEAD >/dev/null 2>&1; then
+		error "A revert is in progress. Run 'git status', then finish or abort it before using git-flow."
+	fi
+
+	rebase_apply="$(git rev-parse --git-path rebase-apply 2>/dev/null || true)"
+	rebase_merge="$(git rev-parse --git-path rebase-merge 2>/dev/null || true)"
+	if [[ -n ${rebase_apply} && -d ${rebase_apply} ]] ||
+		[[ -n ${rebase_merge} && -d ${rebase_merge} ]]; then
+		error "A rebase or patch apply is in progress. Run 'git status', then finish or abort it before using git-flow."
+	fi
+}
+
+ensure_repository_ready_for_flow() {
+	ensure_no_git_operation_in_progress
+	ensure_no_unmerged_paths
+}
+
 create_autostash() {
 	local label=$1
 	local stash_before stash_after
@@ -158,7 +196,13 @@ create_autostash() {
 	stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
 
 	info "Stashing local changes…"
-	git stash push -u -m "${label}" >/dev/null || error "Failed to stash local changes"
+	if ! git stash push -u -m "${label}" >/dev/null; then
+		warn "Local changes could not be auto-stashed."
+		warn "The command stopped before switching branches."
+		warn "Review the current state with: git status"
+		warn "If Git reports unmerged paths, resolve them before trying again."
+		error "Failed to stash local changes"
+	fi
 
 	stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
 
@@ -332,6 +376,7 @@ cmd_sync() {
 	base=$(detect_base "${branch}")
 
 	echo "[GIT-FLOW] Syncing '${branch}' against '${base}'"
+	ensure_repository_ready_for_flow
 	fetch_prune
 
 	info "Rebasing '${branch}' onto origin/${base}…"
@@ -386,6 +431,7 @@ cmd_create() {
 	original_branch="$(current_branch)"
 
 	echo "[GIT-FLOW] Creating '${target_branch}' from '${base}'"
+	ensure_repository_ready_for_flow
 
 	ensure_local_branch_does_not_exist "${target_branch}"
 
