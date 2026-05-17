@@ -212,19 +212,19 @@ create_autostash() {
 	printf '%s\n' 'stash@{0}'
 }
 
-find_stash_ref_by_label() {
+find_stash_entry_by_label() {
 	local label=$1
-	local ref subject
+	local ref commit subject
 	local stash_entries=""
 
 	[[ -n ${label} ]] || return 0
 
-	stash_entries="$(git stash list --format='%gd%x09%gs')" || return 0
+	stash_entries="$(git stash list --format='%gd%x09%H%x09%gs')" || return 0
 	[[ -n ${stash_entries} ]] || return 0
 
-	while IFS=$'\t' read -r ref subject; do
+	while IFS=$'\t' read -r ref commit subject; do
 		if [[ ${subject} == *"${label}"* ]]; then
-			printf '%s\n' "${ref}"
+			printf '%s\t%s\n' "${ref}" "${commit}"
 			return 0
 		fi
 	done <<< "${stash_entries}"
@@ -234,32 +234,58 @@ find_stash_ref_by_label() {
 
 print_autostash_recovery_guidance() {
 	local stash_label=${1-}
-	local recovery_ref="" quoted_label=""
+	local recovery_entry="" recovery_ref="" recovery_commit="" quoted_label=""
 
-	recovery_ref="$(find_stash_ref_by_label "${stash_label}")"
+	recovery_entry="$(find_stash_entry_by_label "${stash_label}")"
+	if [[ -n ${recovery_entry} ]]; then
+		IFS=$'\t' read -r recovery_ref recovery_commit <<< "${recovery_entry}"
+	fi
 	if [[ -n ${stash_label} ]]; then
 		printf -v quoted_label '%q' "${stash_label}"
 	fi
 
 	warn "Auto-stash could not be restored automatically."
-	if [[ -n ${recovery_ref} ]]; then
-		warn "Your changes were kept in the stash list. Inspect them with: git stash show --stat --include-untracked ${recovery_ref}"
+	if [[ -n ${recovery_commit} ]]; then
+		warn "Your changes were kept in the stash list: ${recovery_ref}"
 	else
 		warn "Your changes were kept in the stash list."
 	fi
-	warn "Review the current state with: git status"
-	warn "If git status already shows your changes, do not apply the stash again."
-	if [[ -n ${recovery_ref} ]]; then
-		warn "If your changes are not present, run: git stash apply ${recovery_ref}"
-		warn "If apply reports conflicts, resolve them and stage files manually with: git add <files>"
+	warn "Do not drop the stash until you confirm your changes were recovered."
+	warn "Check the state before choosing the next step: git status"
+	warn "If git status shows unmerged paths: resolve conflicts, then run: git add <files>"
+	if [[ -n ${recovery_commit} ]]; then
+		warn "If the working tree is clean or your files are missing, run: git stash apply ${recovery_commit}"
+		warn "Optional: list files in the stash with: git stash show --name-status --include-untracked ${recovery_commit}"
 	else
 		warn "Find the stash ref with: git stash list --format='%gd %gs'"
-		warn "Then apply it with: git stash apply <stash-ref>"
-		warn "If apply reports conflicts, resolve them and stage files manually with: git add <files>"
+		warn "If the working tree is clean or your files are missing, run: git stash apply <stash-ref>"
+		warn "Optional: list files in the stash with: git stash show --name-status --include-untracked <stash-ref>"
 	fi
+	warn "If apply reports conflicts, resolve them and run: git add <files>"
 	if [[ -n ${stash_label} ]]; then
-		warn "If the stash ref changes later, find it with: git stash list --format='%gd %gs' | grep -F -- ${quoted_label}"
+		warn "If you need to find it later, run: git stash list --format='%gd %gs' | grep -F -- ${quoted_label}"
 	fi
+}
+
+drop_restored_autostash() {
+	local stash_ref=$1
+	local stash_label=${2-}
+	local drop_ref="${stash_ref}" recovery_entry="" recovery_ref=""
+
+	if [[ -n ${stash_label} ]]; then
+		recovery_entry="$(find_stash_entry_by_label "${stash_label}")"
+		if [[ -n ${recovery_entry} ]]; then
+			IFS=$'\t' read -r recovery_ref _ <<< "${recovery_entry}"
+			drop_ref="${recovery_ref}"
+		fi
+	fi
+
+	if git stash drop "${drop_ref}" >/dev/null 2>&1; then
+		return 0
+	fi
+
+	warn "Restored local changes, but the auto-stash could not be dropped automatically."
+	warn "After confirming your changes are recovered, you can remove it with: git stash drop ${drop_ref}"
 }
 
 restore_autostash() {
@@ -269,7 +295,8 @@ restore_autostash() {
 	[[ -n ${stash_ref} ]] || return 0
 
 	info "Restoring stashed local changes…"
-	if git stash pop --index "${stash_ref}"; then
+	if git stash apply --index "${stash_ref}"; then
+		drop_restored_autostash "${stash_ref}" "${stash_label}"
 		info "Restored local changes"
 		return 0
 	fi
@@ -300,7 +327,8 @@ rollback_create() {
 	if [[ -n ${stash_ref} ]]; then
 		if ${returned_to_original}; then
 			info "Restoring stashed local changes to '${original_branch}'…"
-			if git stash pop --index "${stash_ref}" >/dev/null 2>&1; then
+			if git stash apply --index "${stash_ref}" >/dev/null 2>&1; then
+				drop_restored_autostash "${stash_ref}" "${stash_label}"
 				info "Restored local changes to '${original_branch}'"
 			else
 				print_autostash_recovery_guidance "${stash_label}"
@@ -443,9 +471,9 @@ cmd_create() {
 	worktree_status="$(get_worktree_status)"
 	if [[ -n ${worktree_status} ]]; then
 		if [[ -n ${original_branch} ]]; then
-			auto_stash_label="git-flow:auto-stash:$(date -u +%Y%m%dT%H%M%SZ):${target_branch}:from:${original_branch}"
+			auto_stash_label="git-flow:create-branch:auto-stash:${target_branch}:from:${original_branch}:$(date -u +%Y%m%dT%H%M%SZ)"
 		else
-			auto_stash_label="git-flow:auto-stash:$(date -u +%Y%m%dT%H%M%SZ):${target_branch}"
+			auto_stash_label="git-flow:create-branch:auto-stash:${target_branch}:$(date -u +%Y%m%dT%H%M%SZ)"
 		fi
 		stash_ref=$(create_autostash "${auto_stash_label}")
 	fi
