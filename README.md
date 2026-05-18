@@ -49,9 +49,9 @@ Nesse modo, use o binário diretamente:
 Use estes comandos para iniciar uma nova branch já no padrão esperado pelo time
 
 ```bash
-git feat <name> [--push]
-git fix <name> [--push]
-git hotfix <name> [--push]
+git feat <name> [--push] [--no-restore]
+git fix <name> [--push] [--no-restore]
+git hotfix <name> [--push] [--no-restore]
 ```
 
 Exemplos:
@@ -60,6 +60,7 @@ Exemplos:
 git feat login
 git feat api/login
 git feat "login oauth" --push
+git feat experiment --no-restore
 git fix issue-123
 git hotfix 1.0.1 --push
 ```
@@ -70,6 +71,7 @@ Regras:
 * `fix` cria branch a partir de `develop`
 * `hotfix` cria branch a partir de `main`
 * `--push` cria branch e faz push em seguida
+* `--no-restore` mantém mudanças locais no stash em vez de aplicar na branch nova
 
 ### Sincronizar a branch atual
 
@@ -114,6 +116,9 @@ Se houver mudanças locais não commitadas:
 * o script faz **auto-stash**
 * cria a branch nova
 * tenta restaurar as mudanças na branch criada
+
+Se você usar `--no-restore`, o script não restaura o stash automaticamente.
+Ele mantém as mudanças no stash e mostra o comando para aplicar depois, se necessário.
 
 Se houver falha depois do stash, o script tenta:
 

@@ -7,9 +7,9 @@ set -euo pipefail
 show_help() {
 	cat <<EOF
 Usage:
-  git feat <name> [--push]
-  git fix <name> [--push]
-  git hotfix <name> [--push]
+  git feat <name> [--push] [--no-restore]
+  git fix <name> [--push] [--no-restore]
+  git hotfix <name> [--push] [--no-restore]
   git sync [--push]
   git pr
 
@@ -21,9 +21,9 @@ Commands:
   pr          Open the PR creation page in Azure DevOps
 
 Also supported (verbose equivalents):
-  git feature <name> [--push]
-  git bugfix <name> [--push]
-  git flow <type/name> [--push]
+  git feature <name> [--push] [--no-restore]
+  git bugfix <name> [--push] [--no-restore]
+  git flow <type/name> [--push] [--no-restore]
   git propose
   git flow help
 
@@ -31,10 +31,12 @@ Notes:
   - Names with spaces must be quoted
   - Spaces in names are converted to '-'
   - Internal '/' is allowed (example: api/login)
+  - --no-restore keeps local changes in the stash instead of applying them to the new branch
 
 Examples:
   git feat login
   git feat login --push
+  git feat login --no-restore
   git feat api/login
   git fix issue-123
   git fix issue-123 --push
@@ -232,16 +234,23 @@ find_stash_entry_by_label() {
 	return 0
 }
 
+print_stash_find_later_guidance() {
+	local stash_label=${1-}
+	local quoted_label=""
+
+	if [[ -n ${stash_label} ]]; then
+		printf -v quoted_label '%q' "${stash_label}"
+		warn "If you need to find it later, run: git stash list --format='%gd %gs' | grep -F -- ${quoted_label}"
+	fi
+}
+
 print_autostash_recovery_guidance() {
 	local stash_label=${1-}
-	local recovery_entry="" recovery_ref="" recovery_commit="" quoted_label=""
+	local recovery_entry="" recovery_ref="" recovery_commit=""
 
 	recovery_entry="$(find_stash_entry_by_label "${stash_label}")"
 	if [[ -n ${recovery_entry} ]]; then
 		IFS=$'\t' read -r recovery_ref recovery_commit <<< "${recovery_entry}"
-	fi
-	if [[ -n ${stash_label} ]]; then
-		printf -v quoted_label '%q' "${stash_label}"
 	fi
 
 	warn "Auto-stash could not be restored automatically."
@@ -262,9 +271,29 @@ print_autostash_recovery_guidance() {
 		warn "Optional: list files in the stash with: git stash show --name-status --include-untracked <stash-ref>"
 	fi
 	warn "If apply reports conflicts, resolve them and run: git add <files>"
-	if [[ -n ${stash_label} ]]; then
-		warn "If you need to find it later, run: git stash list --format='%gd %gs' | grep -F -- ${quoted_label}"
+	print_stash_find_later_guidance "${stash_label}"
+}
+
+print_autostash_kept_guidance() {
+	local stash_label=${1-}
+	local recovery_entry="" recovery_ref="" recovery_commit=""
+
+	recovery_entry="$(find_stash_entry_by_label "${stash_label}")"
+	if [[ -n ${recovery_entry} ]]; then
+		IFS=$'\t' read -r recovery_ref recovery_commit <<< "${recovery_entry}"
 	fi
+
+	warn "Auto-stash was kept because --no-restore was used."
+	if [[ -n ${recovery_commit} ]]; then
+		warn "Your changes are in the stash list: ${recovery_ref}"
+		warn "Apply them later with: git stash apply ${recovery_commit}"
+		warn "Optional: list files in the stash with: git stash show --name-status --include-untracked ${recovery_commit}"
+	else
+		warn "Find the stash ref with: git stash list --format='%gd %gs'"
+		warn "Apply it later with: git stash apply <stash-ref>"
+		warn "Optional: list files in the stash with: git stash show --name-status --include-untracked <stash-ref>"
+	fi
+	print_stash_find_later_guidance "${stash_label}"
 }
 
 drop_restored_autostash() {
@@ -417,7 +446,7 @@ cmd_create() {
 	local selector=${1-}
 	shift || true
 
-	local do_push=false
+	local do_push=false no_restore=false
 	local target_branch="" raw_name="" normalized_name=""
 	local original_branch="" stash_ref="" worktree_status="" auto_stash_label=""
 	local positional=()
@@ -427,6 +456,7 @@ cmd_create() {
 	for arg in "$@"; do
 		case "${arg}" in
 		--push) do_push=true ;;
+		--no-restore) no_restore=true ;;
 		-*) create_usage_error "Unknown option '${arg}'" ;;
 		*) positional+=("${arg}") ;;
 		esac
@@ -493,7 +523,9 @@ cmd_create() {
 		error "Failed to create branch '${target_branch}'"
 	fi
 
-	if [[ -n ${stash_ref} ]]; then
+	if [[ -n ${stash_ref} && ${no_restore} == true ]]; then
+		print_autostash_kept_guidance "${auto_stash_label}"
+	elif [[ -n ${stash_ref} ]]; then
 		restore_autostash "${stash_ref}" "${auto_stash_label}"
 	fi
 
